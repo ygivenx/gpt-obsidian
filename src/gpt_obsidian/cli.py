@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_cmd.add_argument(
         "--summary-provider",
-        choices=["heuristic", "openai"],
+        choices=["heuristic", "openai", "vllm"],
         default="heuristic",
         help="Summary generation mode",
     )
@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_cmd.add_argument(
         "--tag-provider",
-        choices=["heuristic", "openai"],
+        choices=["heuristic", "openai", "vllm"],
         default="heuristic",
         help="Topic tag generation mode",
     )
@@ -142,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Conversations to process in parallel for insight generation (default: 1)",
+    )
+    import_cmd.add_argument(
+        "--allow-openai-fallback",
+        action="store_true",
+        help="Allow heuristic fallback when OpenAI summary/tag calls fail",
     )
 
     doctor_cmd = subparsers.add_parser("doctor", help="Validate export source and vault for import")
@@ -247,11 +252,20 @@ def import_command(args: argparse.Namespace) -> int:
             tag_model=args.tag_model,
             topic_tag_limit=topic_tag_limit,
             enable_topic_tags=args.enable_topic_tags,
+            allow_openai_fallback=args.allow_openai_fallback,
         )
 
         for conversation, insight_result in zip(batch, batch_results):
             if insight_result.issue is not None:
                 issues.append(insight_result.issue)
+                if insight_result.issue.severity == "error":
+                    conv = insight_result.issue.conversation_id or "n/a"
+                    note = insight_result.issue.note_path or "n/a"
+                    print(
+                        f"ERROR: [{insight_result.issue.kind}] conversation=`{conv}` note=`{note}`: "
+                        f"{insight_result.issue.detail}",
+                        file=sys.stderr,
+                    )
             if insight_result.insights is None:
                 stats.errors += 1
                 continue
@@ -704,6 +718,7 @@ def _build_insight_for_conversation(
     tag_model: str | None,
     topic_tag_limit: int,
     enable_topic_tags: bool,
+    allow_openai_fallback: bool,
 ) -> _InsightBuildResult:
     try:
         insights = build_insights(
@@ -718,7 +733,8 @@ def _build_insight_for_conversation(
         )
         return _InsightBuildResult(insights=insights, issue=None)
     except InsightError as exc:
-        if summary_provider == "openai" or tag_provider == "openai":
+        openai_enabled = summary_provider == "openai" or tag_provider == "openai"
+        if openai_enabled and allow_openai_fallback:
             fallback = build_heuristic_insights(
                 conversation=conversation,
                 summary_max_bullets=summary_max_bullets,
@@ -733,6 +749,17 @@ def _build_insight_for_conversation(
                     severity="warning",
                     kind="openai_fallback",
                     detail=str(exc),
+                ),
+            )
+        if openai_enabled:
+            return _InsightBuildResult(
+                insights=None,
+                issue=ImportIssue(
+                    conversation_id=conversation.id,
+                    note_path=None,
+                    severity="error",
+                    kind="openai_error",
+                    detail=f"{exc} (set --allow-openai-fallback to continue with heuristic fallback)",
                 ),
             )
         return _InsightBuildResult(
@@ -757,6 +784,7 @@ def _build_insight_batch(
     tag_model: str | None,
     topic_tag_limit: int,
     enable_topic_tags: bool,
+    allow_openai_fallback: bool,
 ) -> list[_InsightBuildResult]:
     if max_workers <= 1 or len(conversations) <= 1:
         return [
@@ -769,6 +797,7 @@ def _build_insight_batch(
                 tag_model=tag_model,
                 topic_tag_limit=topic_tag_limit,
                 enable_topic_tags=enable_topic_tags,
+                allow_openai_fallback=allow_openai_fallback,
             )
             for conversation in conversations
         ]
@@ -786,6 +815,7 @@ def _build_insight_batch(
                 tag_model=tag_model,
                 topic_tag_limit=topic_tag_limit,
                 enable_topic_tags=enable_topic_tags,
+                allow_openai_fallback=allow_openai_fallback,
             ): conversation.id
             for conversation in conversations
         }

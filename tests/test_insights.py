@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from gpt_obsidian.insights import InsightError, build_insights, build_heuristic_insights
+from gpt_obsidian.insights import InsightError, _parse_json_object, build_insights, build_heuristic_insights
 from gpt_obsidian.models import Conversation, Message
 
 
@@ -72,6 +72,14 @@ class InsightsTests(unittest.TestCase):
                 topic_tag_limit=8,
                 enable_topic_tags=True,
             )
+
+    def test_parse_json_object_from_fenced_content(self) -> None:
+        parsed = _parse_json_object("```json\n{\"topic_tags\": [\"python\"]}\n```")
+        self.assertEqual(parsed, {"topic_tags": ["python"]})
+
+    def test_parse_json_object_from_wrapped_content(self) -> None:
+        parsed = _parse_json_object("Here is the result: {\"topic_tags\": [\"python\"]}")
+        self.assertEqual(parsed, {"topic_tags": ["python"]})
 
 
 if __name__ == "__main__":

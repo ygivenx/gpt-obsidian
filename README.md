@@ -33,9 +33,9 @@ uv run gpt-obsidian import \
 
 ### Summary + Tag providers
 
-- Summary provider: `--summary-provider {heuristic,openai}`
+- Summary provider: `--summary-provider {heuristic,openai,vllm}`
 - Summary model: `--summary-model <model>` (required for `openai`)
-- Tag provider: `--tag-provider {heuristic,openai}`
+- Tag provider: `--tag-provider {heuristic,openai,vllm}`
 - Tag model: `--tag-model <model>` (required for `openai`)
 
 Example (OpenAI summaries + OpenAI tags):
@@ -52,6 +52,12 @@ uv run gpt-obsidian import \
 
 `.env` support: if project-root `.env` contains `OPENAI_API_KEY=...`, it is loaded automatically.
 
+For vLLM (OpenAI-compatible server), defaults are:
+
+- `VLLM_BASE_URL=http://localhost:8000/v1`
+- `VLLM_MODEL=gpt-oss-120b`
+- `VLLM_API_KEY=EMPTY` (or your configured token)
+
 ## Useful flags
 
 - `--force` re-render all chats
@@ -66,6 +72,7 @@ uv run gpt-obsidian import \
 - `--report-format {md,json,both}`
 - `--cost-estimate` print rough OpenAI cost estimate before import
 - `--batch-size N` process insight generation in parallel batches (default: `1`)
+- `--allow-openai-fallback` continue with heuristic summary/tags if OpenAI calls fail
 
 `--cost-estimate` currently has built-in pricing for:
 

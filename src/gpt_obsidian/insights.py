@@ -6,6 +6,7 @@ import re
 import urllib.error
 import urllib.request
 from collections import Counter
+from urllib.parse import urljoin
 
 from .models import Conversation, ConversationInsights
 
@@ -104,6 +105,15 @@ def build_insights(
         if not api_key:
             raise InsightError("OPENAI_API_KEY is required when --summary-provider openai")
         summary = _openai_summarize(conversation, summary_model, summary_max_bullets, api_key)
+    elif summary_provider == "vllm":
+        model = summary_model or os.getenv("VLLM_MODEL", "gpt-oss-120b")
+        summary = _vllm_summarize(
+            conversation=conversation,
+            model=model,
+            summary_max_bullets=summary_max_bullets,
+            base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
+        )
     elif summary_provider != "heuristic":
         raise InsightError(f"Unsupported summary provider: {summary_provider}")
 
@@ -115,6 +125,15 @@ def build_insights(
         if not api_key:
             raise InsightError("OPENAI_API_KEY is required when --tag-provider openai")
         topic_tags = _openai_tags(conversation, tag_model, topic_tag_limit, api_key)
+    elif enable_topic_tags and tag_provider == "vllm":
+        model = tag_model or os.getenv("VLLM_MODEL", "gpt-oss-120b")
+        topic_tags = _vllm_tags(
+            conversation=conversation,
+            model=model,
+            topic_tag_limit=topic_tag_limit,
+            base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
+        )
     elif enable_topic_tags and tag_provider != "heuristic":
         raise InsightError(f"Unsupported tag provider: {tag_provider}")
 
@@ -268,6 +287,78 @@ def _openai_tags(conversation: Conversation, model: str, topic_tag_limit: int, a
     return _clean_tags(parsed.get("topic_tags"), topic_tag_limit)
 
 
+def _vllm_summarize(
+    conversation: Conversation,
+    model: str,
+    summary_max_bullets: int,
+    base_url: str,
+    api_key: str,
+) -> dict:
+    prompt = {
+        "conversation_id": conversation.id,
+        "title": conversation.title,
+        "max_bullets": summary_max_bullets,
+        "transcript": _transcript_rows(conversation),
+        "instructions": (
+            "Return compact JSON with keys summary_bullets, key_decisions, action_items, open_questions. "
+            "Each value must be an array of short strings."
+        ),
+    }
+    return _chat_json_request(
+        endpoint=_chat_completions_endpoint(base_url),
+        model=model,
+        api_key=api_key,
+        prompt=prompt,
+        schema_name="conversation_summary",
+        schema={
+            "type": "object",
+            "properties": {
+                "summary_bullets": {"type": "array", "items": {"type": "string"}},
+                "key_decisions": {"type": "array", "items": {"type": "string"}},
+                "action_items": {"type": "array", "items": {"type": "string"}},
+                "open_questions": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary_bullets", "key_decisions", "action_items", "open_questions"],
+            "additionalProperties": False,
+        },
+    )
+
+
+def _vllm_tags(
+    conversation: Conversation,
+    model: str,
+    topic_tag_limit: int,
+    base_url: str,
+    api_key: str,
+) -> list[str]:
+    prompt = {
+        "conversation_id": conversation.id,
+        "title": conversation.title,
+        "max_tags": topic_tag_limit,
+        "transcript": _transcript_rows(conversation),
+        "instructions": (
+            "Return JSON with key topic_tags as list of concise canonical topic names in kebab-case only. "
+            "No duplicates, no generic words, max length 32 per tag."
+        ),
+    }
+    parsed = _chat_json_request(
+        endpoint=_chat_completions_endpoint(base_url),
+        model=model,
+        api_key=api_key,
+        prompt=prompt,
+        schema_name="conversation_tags",
+        schema={
+            "type": "object",
+            "properties": {
+                "topic_tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["topic_tags"],
+            "additionalProperties": False,
+        },
+    )
+    return _clean_tags(parsed.get("topic_tags"), topic_tag_limit)
+
+
 def _transcript_rows(conversation: Conversation) -> list[str]:
     transcript = []
     for msg in conversation.messages:
@@ -280,29 +371,40 @@ def _transcript_rows(conversation: Conversation) -> list[str]:
 
 
 def _openai_json_request(model: str, api_key: str, prompt: dict, schema_name: str, schema: dict) -> dict:
+    return _chat_json_request(
+        endpoint="https://api.openai.com/v1/chat/completions",
+        model=model,
+        api_key=api_key,
+        prompt=prompt,
+        schema_name=schema_name,
+        schema=schema,
+    )
+
+
+def _chat_json_request(endpoint: str, model: str, api_key: str, prompt: dict, schema_name: str, schema: dict) -> dict:
     req = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
+        endpoint,
         data=json.dumps(
             {
                 "model": model,
-                "input": [
+                "messages": [
                     {
                         "role": "system",
-                        "content": [{"type": "input_text", "text": "Return strict JSON only."}],
+                        "content": "Return strict JSON only.",
                     },
                     {
                         "role": "user",
-                        "content": [{"type": "input_text", "text": json.dumps(prompt)}],
+                        "content": json.dumps(prompt),
                     },
                 ],
-                "max_output_tokens": 500,
-                "text": {
-                    "format": {
-                        "type": "json_schema",
+                "max_completion_tokens": 500,
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
                         "name": schema_name,
                         "strict": True,
                         "schema": schema,
-                    }
+                    },
                 },
             }
         ).encode("utf-8"),
@@ -322,35 +424,60 @@ def _openai_json_request(model: str, api_key: str, prompt: dict, schema_name: st
     except urllib.error.URLError as exc:
         raise InsightError(f"OpenAI network error: {exc}") from exc
 
-    text_out = payload.get("output_text")
-    if isinstance(text_out, str):
+    choices = payload.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            parsed = _parse_json_object(content)
+            if parsed is not None:
+                return parsed
+
+    raise InsightError("OpenAI response did not contain valid JSON output")
+
+
+def _parse_json_object(text: str) -> dict | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
         try:
-            parsed = json.loads(text_out)
+            parsed = json.loads(fenced.group(1))
             if isinstance(parsed, dict):
                 return parsed
         except json.JSONDecodeError:
             pass
 
-    output = payload.get("output")
-    if isinstance(output, list):
-        for item in output:
-            if not isinstance(item, dict):
-                continue
-            content = item.get("content")
-            if not isinstance(content, list):
-                continue
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "output_text" and isinstance(part.get("text"), str):
-                    try:
-                        parsed = json.loads(part["text"])
-                        if isinstance(parsed, dict):
-                            return parsed
-                    except json.JSONDecodeError:
-                        continue
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(stripped[start : end + 1])
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        return None
+    return None
 
-    raise InsightError("OpenAI response did not contain valid JSON output")
+
+def _chat_completions_endpoint(base_url: str) -> str:
+    normalized = (base_url or "").rstrip("/") + "/"
+    return urljoin(normalized, "chat/completions")
 
 
 def _clean_items(value: object, limit: int) -> list[str]:

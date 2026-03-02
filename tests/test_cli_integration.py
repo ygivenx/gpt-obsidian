@@ -14,7 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from gpt_obsidian.cli import run
-from gpt_obsidian.insights import InsightError
+from gpt_obsidian.insights import InsightError, build_heuristic_insights
 
 
 class CliIntegrationTests(unittest.TestCase):
@@ -183,7 +183,74 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("--tag-model is required", err.getvalue())
 
-    def test_openai_fallback_to_heuristic_on_error(self) -> None:
+    def test_vllm_mode_does_not_require_openai_key_or_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            zip_path = base / "export.zip"
+            vault = base / "vault"
+            self._write_export(zip_path, message_text="x", update_time=1704240000)
+            out = io.StringIO()
+            with (
+                contextlib.redirect_stdout(out),
+                mock.patch.dict("os.environ", {}, clear=True),
+                mock.patch(
+                    "gpt_obsidian.cli.build_insights",
+                    side_effect=lambda **kwargs: build_heuristic_insights(
+                        conversation=kwargs["conversation"],
+                        summary_max_bullets=kwargs["summary_max_bullets"],
+                        topic_tag_limit=kwargs["topic_tag_limit"],
+                        enable_topic_tags=kwargs["enable_topic_tags"],
+                    ),
+                ),
+            ):
+                rc = run(
+                    [
+                        "import",
+                        "--input",
+                        str(zip_path),
+                        "--vault",
+                        str(vault),
+                        "--summary-provider",
+                        "vllm",
+                        "--tag-provider",
+                        "vllm",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            self.assertIn("created=1", out.getvalue())
+
+    def test_openai_error_is_not_silent_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            zip_path = base / "export.zip"
+            vault = base / "vault"
+            self._write_export(zip_path, message_text="x", update_time=1704240000)
+            out = io.StringIO()
+            err = io.StringIO()
+            with (
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(err),
+                mock.patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+                mock.patch("gpt_obsidian.cli.build_insights", side_effect=InsightError("boom")),
+            ):
+                rc = run(
+                    [
+                        "import",
+                        "--input",
+                        str(zip_path),
+                        "--vault",
+                        str(vault),
+                        "--summary-provider",
+                        "openai",
+                        "--summary-model",
+                        "gpt-4o-mini",
+                    ]
+                )
+            self.assertEqual(rc, 1)
+            self.assertIn("errors=1", out.getvalue())
+            self.assertIn("openai_error", err.getvalue())
+
+    def test_openai_fallback_can_be_explicitly_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             zip_path = base / "export.zip"
@@ -206,6 +273,7 @@ class CliIntegrationTests(unittest.TestCase):
                         "openai",
                         "--summary-model",
                         "gpt-4o-mini",
+                        "--allow-openai-fallback",
                     ]
                 )
             self.assertEqual(rc, 0)
