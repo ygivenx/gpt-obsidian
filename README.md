@@ -1,5 +1,7 @@
 # gpt-obsidian
 
+![alt text](obsidian-graph.png)
+
 Convert ChatGPT exports (ZIP or extracted folder) into an Obsidian vault with incremental re-import, informative summaries, OpenAI-powered tagging, topic backlinks, Bases views, monthly indexes, and import reports.
 
 ## Features
