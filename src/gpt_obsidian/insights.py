@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -53,6 +55,43 @@ STOPWORDS = {
     "you",
     "for",
     "can",
+}
+
+SUMMARY_INSTRUCTIONS = (
+    "Return compact JSON with keys summary_bullets, key_decisions, action_items, open_questions. "
+    "Each value must be an array of short strings."
+)
+
+TAG_INSTRUCTIONS = (
+    "Return JSON with key topic_tags as list of concise canonical topic names in kebab-case only. "
+    "Order tags from general to specific and ensure every specialized tag includes its broader parent first "
+    "(example: python, numpy, numpy-reshape). No duplicates, max length 32 per tag."
+)
+
+MAX_COMPLETION_TOKENS = 16000
+CHAT_REQUEST_TIMEOUT = 90
+CHAT_REQUEST_RETRIES = 3
+CHAT_REQUEST_BACKOFF_SECONDS = 2.0
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary_bullets": {"type": "array", "items": {"type": "string"}},
+        "key_decisions": {"type": "array", "items": {"type": "string"}},
+        "action_items": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary_bullets", "key_decisions", "action_items", "open_questions"],
+    "additionalProperties": False,
+}
+
+TAG_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "topic_tags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["topic_tags"],
+    "additionalProperties": False,
 }
 
 DECISION_HINTS = ("decide", "decision", "chose", "choose", "selected", "we will", "i'll", "we'll")
@@ -236,54 +275,51 @@ def _looks_like_image(name: str) -> bool:
     return ext[1] in {"png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"}
 
 
+def _summary_prompt(conversation: Conversation, summary_max_bullets: int) -> dict:
+    return {
+        "conversation_id": conversation.id,
+        "title": conversation.title,
+        "max_bullets": summary_max_bullets,
+        "transcript": _transcript_rows(conversation),
+        "instructions": SUMMARY_INSTRUCTIONS,
+    }
+
+
+def _tag_prompt(conversation: Conversation, topic_tag_limit: int) -> dict:
+    return {
+        "conversation_id": conversation.id,
+        "title": conversation.title,
+        "max_tags": topic_tag_limit,
+        "transcript": _transcript_rows(conversation),
+        "instructions": TAG_INSTRUCTIONS,
+    }
+
+
 def _openai_summarize(
     conversation: Conversation,
     model: str,
     summary_max_bullets: int,
     api_key: str,
 ) -> dict:
-    prompt = {
-        "conversation_id": conversation.id,
-        "title": conversation.title,
-        "max_bullets": summary_max_bullets,
-        "transcript": _transcript_rows(conversation),
-        "instructions": (
-            "Return compact JSON with keys summary_bullets, key_decisions, action_items, open_questions. "
-            "Each value must be an array of short strings."
-        ),
-    }
-    return _openai_json_request(model=model, api_key=api_key, prompt=prompt, schema_name="conversation_summary", schema={
-        "type": "object",
-        "properties": {
-            "summary_bullets": {"type": "array", "items": {"type": "string"}},
-            "key_decisions": {"type": "array", "items": {"type": "string"}},
-            "action_items": {"type": "array", "items": {"type": "string"}},
-            "open_questions": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["summary_bullets", "key_decisions", "action_items", "open_questions"],
-        "additionalProperties": False,
-    })
+    prompt = _summary_prompt(conversation, summary_max_bullets)
+    return _openai_json_request(
+        model=model,
+        api_key=api_key,
+        prompt=prompt,
+        schema_name="conversation_summary",
+        schema=SUMMARY_SCHEMA,
+    )
 
 
 def _openai_tags(conversation: Conversation, model: str, topic_tag_limit: int, api_key: str) -> list[str]:
-    prompt = {
-        "conversation_id": conversation.id,
-        "title": conversation.title,
-        "max_tags": topic_tag_limit,
-        "transcript": _transcript_rows(conversation),
-        "instructions": (
-            "Return JSON with key topic_tags as list of concise canonical topic names in kebab-case only. "
-            "No duplicates, no generic words, max length 32 per tag."
-        ),
-    }
-    parsed = _openai_json_request(model=model, api_key=api_key, prompt=prompt, schema_name="conversation_tags", schema={
-        "type": "object",
-        "properties": {
-            "topic_tags": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["topic_tags"],
-        "additionalProperties": False,
-    })
+    prompt = _tag_prompt(conversation, topic_tag_limit)
+    parsed = _openai_json_request(
+        model=model,
+        api_key=api_key,
+        prompt=prompt,
+        schema_name="conversation_tags",
+        schema=TAG_SCHEMA,
+    )
     return _clean_tags(parsed.get("topic_tags"), topic_tag_limit)
 
 
@@ -294,33 +330,14 @@ def _vllm_summarize(
     base_url: str,
     api_key: str,
 ) -> dict:
-    prompt = {
-        "conversation_id": conversation.id,
-        "title": conversation.title,
-        "max_bullets": summary_max_bullets,
-        "transcript": _transcript_rows(conversation),
-        "instructions": (
-            "Return compact JSON with keys summary_bullets, key_decisions, action_items, open_questions. "
-            "Each value must be an array of short strings."
-        ),
-    }
+    prompt = _summary_prompt(conversation, summary_max_bullets)
     return _chat_json_request(
         endpoint=_chat_completions_endpoint(base_url),
         model=model,
         api_key=api_key,
         prompt=prompt,
         schema_name="conversation_summary",
-        schema={
-            "type": "object",
-            "properties": {
-                "summary_bullets": {"type": "array", "items": {"type": "string"}},
-                "key_decisions": {"type": "array", "items": {"type": "string"}},
-                "action_items": {"type": "array", "items": {"type": "string"}},
-                "open_questions": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["summary_bullets", "key_decisions", "action_items", "open_questions"],
-            "additionalProperties": False,
-        },
+        schema=SUMMARY_SCHEMA,
     )
 
 
@@ -331,30 +348,14 @@ def _vllm_tags(
     base_url: str,
     api_key: str,
 ) -> list[str]:
-    prompt = {
-        "conversation_id": conversation.id,
-        "title": conversation.title,
-        "max_tags": topic_tag_limit,
-        "transcript": _transcript_rows(conversation),
-        "instructions": (
-            "Return JSON with key topic_tags as list of concise canonical topic names in kebab-case only. "
-            "No duplicates, no generic words, max length 32 per tag."
-        ),
-    }
+    prompt = _tag_prompt(conversation, topic_tag_limit)
     parsed = _chat_json_request(
         endpoint=_chat_completions_endpoint(base_url),
         model=model,
         api_key=api_key,
         prompt=prompt,
         schema_name="conversation_tags",
-        schema={
-            "type": "object",
-            "properties": {
-                "topic_tags": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["topic_tags"],
-            "additionalProperties": False,
-        },
+        schema=TAG_SCHEMA,
     )
     return _clean_tags(parsed.get("topic_tags"), topic_tag_limit)
 
@@ -382,49 +383,60 @@ def _openai_json_request(model: str, api_key: str, prompt: dict, schema_name: st
 
 
 def _chat_json_request(endpoint: str, model: str, api_key: str, prompt: dict, schema_name: str, schema: dict) -> dict:
-    req = urllib.request.Request(
-        endpoint,
-        data=json.dumps(
-            {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "Return strict JSON only.",
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(prompt),
-                    },
-                ],
-                "max_completion_tokens": 500,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_name,
-                        "strict": True,
-                        "schema": schema,
-                    },
+    request_body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Return strict JSON only.",
                 },
-            }
-        ).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+                {
+                    "role": "user",
+                    "content": json.dumps(prompt),
+                },
+            ],
+            "max_completion_tokens": MAX_COMPLETION_TOKENS,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        }
+    ).encode("utf-8")
 
-    try:
-        with urllib.request.urlopen(req, timeout=45) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise InsightError(f"OpenAI API error: {exc.code} {body[:300]}") from exc
-    except urllib.error.URLError as exc:
-        raise InsightError(f"OpenAI network error: {exc}") from exc
+    parsed_payload: dict | None = None
+    for attempt in range(1, CHAT_REQUEST_RETRIES + 1):
+        req = urllib.request.Request(
+            endpoint,
+            data=request_body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=CHAT_REQUEST_TIMEOUT) as response:
+                body = response.read().decode("utf-8")
+                parsed_payload = json.loads(body)
+                break
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise InsightError(f"OpenAI API error: {exc.code} {body[:300]}") from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as exc:
+            if attempt < CHAT_REQUEST_RETRIES:
+                time.sleep(CHAT_REQUEST_BACKOFF_SECONDS * attempt)
+                continue
+            raise InsightError(f"OpenAI network error after {CHAT_REQUEST_RETRIES} attempts: {exc}") from exc
 
-    choices = payload.get("choices")
+    if parsed_payload is None:
+        raise InsightError("OpenAI network error: request retries exhausted")
+
+    choices = parsed_payload.get("choices")
     if isinstance(choices, list):
         for choice in choices:
             if not isinstance(choice, dict):

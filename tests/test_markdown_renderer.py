@@ -61,7 +61,7 @@ class MarkdownRendererTests(unittest.TestCase):
         self.assertIn("## Open Questions", md)
         self.assertIn("## Topic Tags", md)
         self.assertIn("![[Assets/ChatGPT/c1/image.png]]", md)
-        self.assertIn("python", md)
+        self.assertIn("  - python", md)
         self.assertIn("[[Topics/python.md|python]]", md)
 
 

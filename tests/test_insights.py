@@ -81,6 +81,5 @@ class InsightsTests(unittest.TestCase):
         parsed = _parse_json_object("Here is the result: {\"topic_tags\": [\"python\"]}")
         self.assertEqual(parsed, {"topic_tags": ["python"]})
 
-
 if __name__ == "__main__":
     unittest.main()

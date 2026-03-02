@@ -19,7 +19,7 @@ from .markdown_renderer import render_conversation_markdown
 from .models import Conversation, ConversationInsights, ImportIssue, ImportRecord, ImportStats
 from .reporting import build_import_report, make_report_paths, write_report_json, write_report_markdown
 from .topics import TopicBacklinkBuilder
-from .transform import conversation_content_hash, note_relative_path
+from .transform import conversation_content_hash, legacy_conversation_content_hash, note_relative_path
 from .utils import ensure_parent, to_iso
 
 
@@ -292,10 +292,29 @@ def import_command(args: argparse.Namespace) -> int:
             for tag in insights.topic_tags:
                 topic_builder.add(tag=tag, note_rel_path=note_rel.as_posix(), title=conversation.title)
 
-            if existing_record and existing_record.content_hash == content_hash and not args.force:
-                stats.skipped += 1
-                _print_progress_state(stats)
-                continue
+            if existing_record and not args.force:
+                match = existing_record.content_hash == content_hash
+                if not match:
+                    legacy_hash = legacy_conversation_content_hash(
+                        conversation=conversation,
+                        insights=insights,
+                        summary_provider=args.summary_provider,
+                        summary_model=args.summary_model,
+                        tag_provider=args.tag_provider,
+                        tag_model=args.tag_model,
+                    )
+                    match = existing_record.content_hash == legacy_hash
+                if match:
+                    stats.skipped += 1
+                    next_records[conversation.id] = ImportRecord(
+                        conversation_id=conversation.id,
+                        note_path=note_rel.as_posix(),
+                        content_hash=content_hash,
+                        last_imported_at=existing_record.last_imported_at,
+                        source_updated_at=existing_record.source_updated_at,
+                    )
+                    _print_progress_state(stats)
+                    continue
 
             extraction = extract_attachments_for_conversation(
                 source_path=bundle.source_path,

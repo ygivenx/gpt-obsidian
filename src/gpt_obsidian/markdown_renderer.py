@@ -85,17 +85,13 @@ def render_conversation_markdown(
     if insights.topic_tags:
         lines.append("Tags:")
         lines.append("")
-        lines.append(" ".join(insights.topic_tags))
+        links = [_topic_wikilink(tag, topic_link_map) for tag in insights.topic_tags]
+        lines.append(" ".join(links))
         lines.append("")
         lines.append("Topic Notes:")
         lines.append("")
         for tag in insights.topic_tags:
-            rel = topic_link_map.get(tag)
-            label = tag
-            if rel:
-                lines.append(f"- [[{rel}|{label}]]")
-            else:
-                lines.append(f"- {tag}")
+            lines.append(f"- {_topic_wikilink(tag, topic_link_map)}")
     else:
         lines.append("- untagged")
     lines.append("")
@@ -178,3 +174,10 @@ def _is_previewable_attachment(name: str) -> bool:
         ".ogg",
         ".pdf",
     }
+
+
+def _topic_wikilink(tag: str, topic_link_map: dict[str, str]) -> str:
+    rel = topic_link_map.get(tag)
+    if rel:
+        return f"[[{rel}|{tag}]]"
+    return tag

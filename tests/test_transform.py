@@ -8,7 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from gpt_obsidian.models import Conversation, ConversationInsights, Message
-from gpt_obsidian.transform import conversation_content_hash, note_relative_path
+from gpt_obsidian.transform import (
+    conversation_content_hash,
+    legacy_conversation_content_hash,
+    note_relative_path,
+)
 
 
 class TransformTests(unittest.TestCase):
@@ -34,7 +38,7 @@ class TransformTests(unittest.TestCase):
             conversation_content_hash(conv2, insights, "heuristic", None, "heuristic", None),
         )
 
-    def test_hash_changes_with_summary_model(self) -> None:
+    def test_hash_ignores_summary_model(self) -> None:
         conv = Conversation(
             id="c1",
             title="My Chat",
@@ -45,6 +49,19 @@ class TransformTests(unittest.TestCase):
         insights = ConversationInsights(summary_bullets=["a"], message_count=1)
         hash_a = conversation_content_hash(conv, insights, "openai", "gpt-4o-mini", "openai", "gpt-4o")
         hash_b = conversation_content_hash(conv, insights, "openai", "gpt-4.1-mini", "openai", "gpt-4o")
+        self.assertEqual(hash_a, hash_b)
+
+    def test_legacy_hash_changes_with_summary_model(self) -> None:
+        conv = Conversation(
+            id="c1",
+            title="My Chat",
+            created_at=datetime(2024, 1, 1, tzinfo=UTC),
+            updated_at=datetime(2024, 1, 1, 1, tzinfo=UTC),
+            messages=[Message(id="m1", role="user", timestamp=None, text_markdown="hello")],
+        )
+        insights = ConversationInsights(summary_bullets=["a"], message_count=1)
+        hash_a = legacy_conversation_content_hash(conv, insights, "openai", "gpt-4o-mini", "openai", "gpt-4o")
+        hash_b = legacy_conversation_content_hash(conv, insights, "openai", "gpt-4.1-mini", "openai", "gpt-4o")
         self.assertNotEqual(hash_a, hash_b)
 
     def test_note_path_uses_year_month_and_slug(self) -> None:
