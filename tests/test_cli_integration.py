@@ -38,6 +38,8 @@ class CliIntegrationTests(unittest.TestCase):
                     str(zip_path),
                     "--vault",
                     str(vault),
+                    "--input-format",
+                    "chatgpt",
                 ])
             self.assertEqual(rc, 0)
             self.assertIn("created=1", out.getvalue())
@@ -61,6 +63,8 @@ class CliIntegrationTests(unittest.TestCase):
                     str(zip_path),
                     "--vault",
                     str(vault),
+                    "--input-format",
+                    "chatgpt",
                 ])
             self.assertEqual(rc, 0)
             self.assertIn("skipped=1", out.getvalue())
@@ -73,6 +77,8 @@ class CliIntegrationTests(unittest.TestCase):
                     str(zip_path),
                     "--vault",
                     str(vault),
+                    "--input-format",
+                    "chatgpt",
                     "--force",
                 ])
             self.assertEqual(rc, 0)
@@ -91,6 +97,8 @@ class CliIntegrationTests(unittest.TestCase):
                     str(zip_path),
                     "--vault",
                     str(vault),
+                    "--input-format",
+                    "chatgpt",
                 ])
             self.assertEqual(rc, 0)
             self.assertIn("updated=1", out.getvalue())
@@ -106,7 +114,17 @@ class CliIntegrationTests(unittest.TestCase):
             out = io.StringIO()
             err = io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc = run(["doctor", "--input", str(bad_zip), "--vault", str(vault)])
+                rc = run(
+                    [
+                        "doctor",
+                        "--input",
+                        str(bad_zip),
+                        "--vault",
+                        str(vault),
+                        "--input-format",
+                        "chatgpt",
+                    ]
+                )
             self.assertEqual(rc, 1)
             self.assertIn("Export validation failed", err.getvalue())
 
@@ -130,6 +148,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(export_dir),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                     ]
                 )
             self.assertEqual(rc, 0)
@@ -154,6 +174,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--summary-provider",
                         "openai",
                     ]
@@ -176,6 +198,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--tag-provider",
                         "openai",
                     ]
@@ -210,6 +234,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--summary-provider",
                         "vllm",
                         "--tag-provider",
@@ -240,6 +266,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--summary-provider",
                         "openai",
                         "--summary-model",
@@ -269,6 +297,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--summary-provider",
                         "openai",
                         "--summary-model",
@@ -278,6 +308,50 @@ class CliIntegrationTests(unittest.TestCase):
                 )
             self.assertEqual(rc, 0)
             self.assertIn("created=1", out.getvalue())
+
+    def test_import_requires_input_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            zip_path = base / "export.zip"
+            vault = base / "vault"
+            self._write_export(zip_path, message_text="x", update_time=1704240000)
+            with self.assertRaises(SystemExit) as ctx:
+                run(
+                    [
+                        "import",
+                        "--input",
+                        str(zip_path),
+                        "--vault",
+                        str(vault),
+                    ]
+                )
+            self.assertEqual(ctx.exception.code, 2)
+
+    def test_import_claude_zip_sets_source_and_tags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            zip_path = base / "claude.zip"
+            vault = base / "vault"
+            self._write_claude_export(zip_path)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = run(
+                    [
+                        "import",
+                        "--input",
+                        str(zip_path),
+                        "--vault",
+                        str(vault),
+                        "--input-format",
+                        "claude",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            note_path = vault / "Chats/2026/02/claude-example--claude-1.md"
+            note_text = note_path.read_text(encoding="utf-8")
+            self.assertIn("source: claude", note_text)
+            self.assertIn("tags:\n  - claude", note_text)
+            self.assertIn("**Tool use:** web_search", note_text)
 
     def test_cost_estimate_prints_for_heuristic(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -294,6 +368,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--cost-estimate",
                     ]
                 )
@@ -318,6 +394,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--summary-provider",
                         "openai",
                         "--summary-model",
@@ -346,6 +424,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--batch-size",
                         "2",
                     ]
@@ -369,6 +449,8 @@ class CliIntegrationTests(unittest.TestCase):
                         str(zip_path),
                         "--vault",
                         str(vault),
+                        "--input-format",
+                        "chatgpt",
                         "--batch-size",
                         "0",
                     ]
@@ -447,6 +529,53 @@ class CliIntegrationTests(unittest.TestCase):
         (path / "attachments").mkdir(parents=True, exist_ok=True)
         (path / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
         (path / "attachments" / "image.png").write_bytes(b"test-image")
+
+    def _write_claude_export(self, path: Path) -> None:
+        payload = [
+            {
+                "uuid": "claude-1",
+                "name": "Claude Example",
+                "created_at": "2026-02-15T10:00:00Z",
+                "updated_at": "2026-02-15T10:05:00Z",
+                "chat_messages": [
+                    {
+                        "uuid": "cm1",
+                        "sender": "human",
+                        "text": "Find planning apps",
+                        "content": [{"type": "text", "text": "Find planning apps"}],
+                        "files": [],
+                    },
+                    {
+                        "uuid": "cm2",
+                        "sender": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "Searching for planning apps."},
+                            {
+                                "type": "tool_use",
+                                "name": "web_search",
+                                "message": "Looking up itineraries",
+                                "input": {"query": "travel planning websites"},
+                            },
+                            {
+                                "type": "tool_result",
+                                "name": "web_search",
+                                "content": [
+                                    {
+                                        "type": "knowledge",
+                                        "title": "Trip Planner",
+                                        "url": "https://example.com",
+                                        "text": "Trip planner example snippet.",
+                                    }
+                                ],
+                            },
+                        ],
+                        "files": [],
+                    },
+                ],
+            }
+        ]
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("conversations.json", json.dumps(payload))
 
 
 if __name__ == "__main__":

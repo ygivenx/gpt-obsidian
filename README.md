@@ -8,6 +8,7 @@ Convert ChatGPT exports (ZIP or extracted folder) into an Obsidian vault with in
 
 - Imports from ZIP or extracted export folders.
 - Supports `conversations.json` and split shards (`conversations-000.json`, etc.).
+- Handles both ChatGPT exports and Claude (Anthropic) exports.
 - One note per conversation at `Chats/YYYY/MM/<slug>--<conversation_id>.md`.
 - Attachment extraction to `Assets/ChatGPT/<conversation_id>/...`.
 - Incremental upsert state at `.gpt-obsidian/index.json`.
@@ -28,7 +29,8 @@ uv sync
 ```bash
 uv run gpt-obsidian import \
   --input /path/to/chatgpt-export \
-  --vault /path/to/your-obsidian-vault
+  --vault /path/to/your-obsidian-vault \
+  --input-format chatgpt
 ```
 
 ### Summary + Tag providers
@@ -44,6 +46,7 @@ Example (OpenAI summaries + OpenAI tags):
 uv run gpt-obsidian import \
   --input <path-to-backup-dir or zip> \
   --vault <obsidian-vault-path> \
+  --input-format chatgpt \
   --summary-provider openai \
   --summary-model gpt-4o-mini \
   --tag-provider openai \
@@ -79,6 +82,12 @@ For vLLM (OpenAI-compatible server), defaults are:
 - `gpt-5-nano`, `gpt-5-mini`, `gpt-5`
 - `gpt-4o`, `gpt-4o-mini`
 
+### Claude exports
+
+- Use `--input-format claude` when pointing at Anthropic downloads (typically named `data-YYYY-MM-DD-...zip` and containing `conversations.json`, `projects.json`, etc.).
+- The importer flattens Claude-only segments (thinking, tool use/results) into Markdown blocks and tags those notes with `claude` for filtering.
+- Current Anthropic exports often omit binary attachments; we only create attachments when the ZIP actually includes the referenced file to avoid noisy warnings.
+
 ## Output layout
 
 - Conversations: `Chats/YYYY/MM/...`
@@ -98,7 +107,7 @@ Generated chat notes include both:
 ## Doctor / Sync
 
 ```bash
-uv run gpt-obsidian doctor --input /path/to/export --vault /path/to/vault
+uv run gpt-obsidian doctor --input /path/to/export --vault /path/to/vault --input-format chatgpt
 uv run gpt-obsidian init-sync --vault /path/to/vault --remote <git-remote>
 ```
 

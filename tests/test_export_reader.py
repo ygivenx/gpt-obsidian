@@ -56,7 +56,7 @@ class ExportReaderTests(unittest.TestCase):
                 zf.writestr("conversations.json", json.dumps(payload))
                 zf.writestr("attachments/image.png", b"png")
 
-            bundle = load_export(zip_path)
+            bundle = load_export(zip_path, "chatgpt")
             self.assertEqual(len(bundle.conversations), 1)
             conv = bundle.conversations[0]
             self.assertEqual(conv.id, "conv-1")
@@ -71,7 +71,7 @@ class ExportReaderTests(unittest.TestCase):
                 zf.writestr("foo.json", "{}")
 
             with self.assertRaises(ExportReadError):
-                load_export(zip_path)
+                load_export(zip_path, "chatgpt")
 
     def test_derives_conversation_dates_from_messages_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -105,7 +105,7 @@ class ExportReaderTests(unittest.TestCase):
             with zipfile.ZipFile(zip_path, "w") as zf:
                 zf.writestr("conversations.json", json.dumps(payload))
 
-            bundle = load_export(zip_path)
+            bundle = load_export(zip_path, "chatgpt")
             conv = bundle.conversations[0]
             self.assertIsNotNone(conv.created_at)
             self.assertIsNotNone(conv.updated_at)
@@ -151,10 +151,77 @@ class ExportReaderTests(unittest.TestCase):
             (export_dir / "conversations-000.json").write_text(json.dumps(shard_a), encoding="utf-8")
             (export_dir / "conversations-001.json").write_text(json.dumps(shard_b), encoding="utf-8")
 
-            bundle = load_export(export_dir)
+            bundle = load_export(export_dir, "chatgpt")
             self.assertEqual(len(bundle.conversations), 2)
             ids = sorted(c.id for c in bundle.conversations)
             self.assertEqual(ids, ["conv-a", "conv-b"])
+
+    def test_load_claude_export_parses_segments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zip_path = Path(tmpdir) / "claude.zip"
+            payload = [
+                {
+                    "uuid": "claude-1",
+                    "name": "Claude Chat",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:03:00Z",
+                    "chat_messages": [
+                        {
+                            "uuid": "m1",
+                            "sender": "human",
+                            "text": "Show me links",
+                            "content": [{"type": "text", "text": "Show me links"}],
+                            "files": [],
+                        },
+                        {
+                            "uuid": "m2",
+                            "sender": "assistant",
+                            "content": [
+                                {"type": "thinking", "thinking": "Searching the web."},
+                                {
+                                    "type": "tool_use",
+                                    "name": "search",
+                                    "message": "Looking up itineraries",
+                                    "input": {"query": "travel planning apps"},
+                                },
+                                {
+                                    "type": "tool_result",
+                                    "name": "search",
+                                    "content": [
+                                        {
+                                            "type": "knowledge",
+                                            "title": "Example",
+                                            "url": "https://example.com",
+                                            "text": "Useful snippet.",
+                                        }
+                                    ],
+                                },
+                            ],
+                            "files": [
+                                {
+                                    "file_name": "example.png",
+                                    "mime_type": "image/png",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ]
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("conversations.json", json.dumps(payload))
+                zf.writestr("files/example.png", b"png")
+
+            bundle = load_export(zip_path, "claude")
+            self.assertEqual(len(bundle.conversations), 1)
+            conv = bundle.conversations[0]
+            self.assertEqual(conv.source, "claude")
+            self.assertEqual(conv.tags, ["claude"])
+            self.assertGreaterEqual(len(conv.messages), 2)
+            assistant_msg = conv.messages[1]
+            self.assertIn("**Tool use:** search", assistant_msg.text_markdown)
+            self.assertIn("**Tool result:** search", assistant_msg.text_markdown)
+            self.assertTrue(conv.attachments)
+            self.assertEqual(conv.attachments[0].display_name, "example.png")
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ class Conversation:
     title: str
     created_at: datetime | None
     updated_at: datetime | None
+    source: str = "chatgpt"
     messages: list[Message] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
     tags: list[str] = field(default_factory=lambda: ["chatgpt"])

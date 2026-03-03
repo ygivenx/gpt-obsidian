@@ -59,6 +59,7 @@ def _conversation_serial(conversation: Conversation) -> dict:
     return {
         "id": conversation.id,
         "title": conversation.title,
+        "source": conversation.source,
         "created_at": to_iso(conversation.created_at),
         "updated_at": to_iso(conversation.updated_at),
         "messages": [

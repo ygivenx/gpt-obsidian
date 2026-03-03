@@ -13,19 +13,34 @@ class ExportReadError(RuntimeError):
     pass
 
 
-def load_export(zip_path: Path) -> ExportBundle:
-    if not zip_path.exists():
-        raise ExportReadError(f"Input path not found: {zip_path}")
+def load_export(input_path: Path, input_format: str) -> ExportBundle:
+    if not input_path.exists():
+        raise ExportReadError(f"Input path not found: {input_path}")
 
-    if zip_path.is_dir():
-        return _load_export_dir(zip_path)
-    if zipfile.is_zipfile(zip_path):
-        return _load_export_zip(zip_path)
+    if input_format == "chatgpt":
+        return _load_chatgpt_export(input_path)
+    if input_format == "claude":
+        return _load_claude_export(input_path)
+    raise ExportReadError(f"Unsupported input format: {input_format}")
 
-    raise ExportReadError(f"Input must be a ZIP archive or extracted export directory: {zip_path}")
+
+def _load_chatgpt_export(path: Path) -> ExportBundle:
+    if path.is_dir():
+        return _load_chatgpt_dir(path)
+    if zipfile.is_zipfile(path):
+        return _load_chatgpt_zip(path)
+    raise ExportReadError(f"Input must be a ZIP archive or extracted export directory: {path}")
 
 
-def _load_export_zip(zip_path: Path) -> ExportBundle:
+def _load_claude_export(path: Path) -> ExportBundle:
+    if path.is_dir():
+        return _load_claude_dir(path)
+    if zipfile.is_zipfile(path):
+        return _load_claude_zip(path)
+    raise ExportReadError(f"Input must be a ZIP archive or extracted export directory: {path}")
+
+
+def _load_chatgpt_zip(zip_path: Path) -> ExportBundle:
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = {name for name in zf.namelist() if not name.endswith("/")}
         conversation_names = _find_conversation_json_files(members)
@@ -52,7 +67,7 @@ def _load_export_zip(zip_path: Path) -> ExportBundle:
     )
 
 
-def _load_export_dir(input_dir: Path) -> ExportBundle:
+def _load_chatgpt_dir(input_dir: Path) -> ExportBundle:
     members = {
         str(path.relative_to(input_dir).as_posix())
         for path in input_dir.rglob("*")
@@ -75,6 +90,48 @@ def _load_export_dir(input_dir: Path) -> ExportBundle:
         raw_rows.extend(_coerce_payload_to_rows(payload))
 
     conversations = _parse_conversations(raw_rows)
+    return ExportBundle(
+        source_path=input_dir,
+        source_kind="dir",
+        conversations=conversations,
+        members=members,
+    )
+
+
+def _load_claude_zip(zip_path: Path) -> ExportBundle:
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        members = {name for name in zf.namelist() if not name.endswith("/")}
+        if "conversations.json" not in members:
+            raise ExportReadError("Claude export ZIP missing conversations.json")
+        try:
+            payload = json.loads(zf.read("conversations.json"))
+        except json.JSONDecodeError as exc:
+            raise ExportReadError(f"Invalid JSON in conversations.json: {exc}") from exc
+
+    conversations = _parse_claude_conversations(payload, members)
+    return ExportBundle(
+        source_path=zip_path,
+        source_kind="zip",
+        conversations=conversations,
+        members=members,
+    )
+
+
+def _load_claude_dir(input_dir: Path) -> ExportBundle:
+    members = {
+        str(path.relative_to(input_dir).as_posix())
+        for path in input_dir.rglob("*")
+        if path.is_file()
+    }
+    conversation_file = input_dir / "conversations.json"
+    if not conversation_file.exists():
+        raise ExportReadError("Claude export directory missing conversations.json")
+    try:
+        payload = json.loads(conversation_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ExportReadError(f"Invalid JSON in conversations.json: {exc}") from exc
+
+    conversations = _parse_claude_conversations(payload, members)
     return ExportBundle(
         source_path=input_dir,
         source_kind="dir",
@@ -157,9 +214,241 @@ def _parse_conversation(row: dict) -> Conversation | None:
         title=title,
         created_at=created_at,
         updated_at=updated_at,
+        source="chatgpt",
         messages=messages,
         attachments=all_attachments,
     )
+
+
+def _parse_claude_conversations(raw_payload: object, members: set[str]) -> list[Conversation]:
+    if not isinstance(raw_payload, list):
+        raise ExportReadError("Claude conversations.json must contain a list of conversations")
+
+    output: list[Conversation] = []
+    for row in raw_payload:
+        if not isinstance(row, dict):
+            continue
+        conv_id = str(row.get("uuid") or "").strip()
+        if not conv_id:
+            continue
+        title = str(row.get("name") or "Untitled Claude Chat")
+        created_at = parse_timestamp(row.get("created_at"))
+        updated_at = parse_timestamp(row.get("updated_at"))
+
+        messages: list[Message] = []
+        raw_messages = row.get("chat_messages") or []
+        if isinstance(raw_messages, list):
+            for payload in raw_messages:
+                if not isinstance(payload, dict):
+                    continue
+                parsed = _parse_claude_message(payload, members)
+                if parsed is not None:
+                    messages.append(parsed)
+
+        if created_at is None:
+            created_at = _min_message_time(messages)
+        if updated_at is None:
+            updated_at = _max_message_time(messages)
+
+        all_attachments: list[Attachment] = []
+        for msg in messages:
+            all_attachments.extend(msg.attachments)
+
+        output.append(
+            Conversation(
+                id=conv_id,
+                title=title,
+                created_at=created_at,
+                updated_at=updated_at,
+                source="claude",
+                messages=messages,
+                attachments=all_attachments,
+                tags=["claude"],
+            )
+        )
+
+    if not output:
+        raise ExportReadError("No conversations were found in the export archive")
+    return output
+
+
+def _parse_claude_message(payload: dict, members: set[str]) -> Message | None:
+    msg_id = str(payload.get("uuid") or "").strip()
+    if not msg_id:
+        return None
+
+    sender = str(payload.get("sender") or "unknown").lower()
+    if sender == "human":
+        role = "user"
+    elif sender == "assistant":
+        role = "assistant"
+    else:
+        role = sender or "unknown"
+
+    timestamp = parse_timestamp(payload.get("created_at") or payload.get("updated_at"))
+
+    text_blocks: list[str] = []
+    raw_text = payload.get("text")
+    if isinstance(raw_text, str) and raw_text.strip():
+        text_blocks.append(raw_text)
+
+    contents = payload.get("content")
+    if isinstance(contents, list):
+        for segment in contents:
+            formatted = _format_claude_segment(segment)
+            if formatted:
+                text_blocks.append(formatted)
+
+    attachments = _claude_attachments(payload.get("files"), members)
+
+    normalized = [normalize_markdown(block) for block in text_blocks if normalize_markdown(block)]
+    if not normalized and not attachments:
+        return None
+
+    return Message(
+        id=msg_id,
+        role=role,
+        timestamp=timestamp,
+        text_markdown="\n\n".join(normalized),
+        raw_parts=normalized,
+        attachments=attachments,
+    )
+
+
+def _format_claude_segment(segment: object) -> str | None:
+    if not isinstance(segment, dict):
+        return None
+    seg_type = segment.get("type")
+    if seg_type == "text":
+        text = segment.get("text")
+        return text if isinstance(text, str) and text.strip() else None
+    if seg_type == "thinking":
+        text = segment.get("thinking")
+        return _format_claude_thinking(text) if isinstance(text, str) and text.strip() else None
+    if seg_type == "tool_use":
+        return _format_claude_tool_use(segment)
+    if seg_type == "tool_result":
+        return _format_claude_tool_result(segment)
+    return None
+
+
+def _format_claude_thinking(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return ""
+    lines = stripped.splitlines()
+    if not lines:
+        return ""
+    formatted = [f"> [Claude thinking] {lines[0]}"]
+    for line in lines[1:]:
+        formatted.append(f"> {line}")
+    return "\n".join(formatted)
+
+
+def _format_claude_tool_use(segment: dict) -> str | None:
+    name = segment.get("name") or "tool"
+    message = segment.get("message")
+    input_payload = segment.get("input")
+    parts = [f"**Tool use:** {name}"]
+    if isinstance(message, str) and message.strip():
+        parts.append(message.strip())
+    if input_payload is not None:
+        try:
+            pretty = json.dumps(input_payload, indent=2, sort_keys=True)
+        except TypeError:
+            pretty = str(input_payload)
+        parts.append("```json")
+        parts.append(pretty)
+        parts.append("```")
+    return "\n".join(parts)
+
+
+def _format_claude_tool_result(segment: dict) -> str | None:
+    content = segment.get("content")
+    if not isinstance(content, list):
+        return None
+    lines: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "knowledge":
+            title = item.get("title") or "Knowledge Result"
+            url = item.get("url")
+            snippet = _truncate_snippet(item.get("text", ""))
+            bullet = f"- **{title}**"
+            if url:
+                bullet += f" ({url})"
+            if snippet:
+                bullet += f": {snippet}"
+            lines.append(bullet)
+        elif item_type == "text":
+            snippet = _truncate_snippet(item.get("text", ""))
+            if snippet:
+                lines.append(snippet)
+    if not lines:
+        return None
+    header = segment.get("name")
+    parts = []
+    if header:
+        parts.append(f"**Tool result:** {header}")
+    parts.extend(lines)
+    return "\n".join(parts)
+
+
+def _claude_attachments(entries: object, members: set[str]) -> list[Attachment]:
+    if not isinstance(entries, list):
+        return []
+    output: list[Attachment] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        file_name = str(entry.get("file_name") or "").strip()
+        if not file_name:
+            continue
+        member = _resolve_claude_file_member(file_name, members)
+        if not member:
+            continue
+        output.append(
+            Attachment(
+                id=str(entry.get("uuid") or "") or None,
+                display_name=Path(file_name).name or file_name,
+                source_path=member,
+                source_token=None,
+                mime_type=str(entry.get("mime_type") or "") or None,
+            )
+        )
+    return output
+
+
+def _resolve_claude_file_member(file_name: str, members: set[str]) -> str | None:
+    candidates = []
+    cleaned = file_name.lstrip("/")
+    candidates.append(cleaned)
+    base = Path(cleaned).name
+    if base != cleaned:
+        candidates.append(base)
+    candidates.extend(
+        [
+            f"files/{base}",
+            f"attachments/{base}",
+        ]
+    )
+    for candidate in candidates:
+        if candidate in members:
+            return candidate
+    return None
+
+
+def _truncate_snippet(value: object, limit: int = 600) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
 
 
 def _min_message_time(messages: list[Message]):

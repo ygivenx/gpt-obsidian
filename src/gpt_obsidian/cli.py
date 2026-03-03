@@ -36,11 +36,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         required=True,
         type=Path,
-        help="Path to chatgpt export ZIP or extracted export directory",
+        help="Path to export ZIP or extracted export directory",
     )
     import_cmd.add_argument("--vault", required=True, type=Path, help="Path to Obsidian vault")
     import_cmd.add_argument("--assets-dir", default="Assets/ChatGPT", help="Assets directory inside vault")
     import_cmd.add_argument("--chats-dir", default="Chats", help="Chats directory inside vault")
+    import_cmd.add_argument(
+        "--input-format",
+        choices=["chatgpt", "claude"],
+        required=True,
+        help="Format of the export source (ChatGPT ZIP/dir or Claude Anthropic ZIP/dir)",
+    )
     import_cmd.add_argument("--since", type=str, help="Import only conversations updated on/after YYYY-MM-DD")
     import_cmd.add_argument("--dry-run", action="store_true", help="Print import plan without writing files")
     import_cmd.add_argument(
@@ -154,9 +160,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         required=True,
         type=Path,
-        help="Path to chatgpt export ZIP or extracted export directory",
+        help="Path to export ZIP or extracted export directory",
     )
     doctor_cmd.add_argument("--vault", required=True, type=Path, help="Path to Obsidian vault")
+    doctor_cmd.add_argument(
+        "--input-format",
+        choices=["chatgpt", "claude"],
+        required=True,
+        help="Format of the export source (ChatGPT ZIP/dir or Claude Anthropic ZIP/dir)",
+    )
 
     sync_cmd = subparsers.add_parser("init-sync", help="Initialize Git sync helpers in vault")
     sync_cmd.add_argument("--vault", required=True, type=Path, help="Path to Obsidian vault")
@@ -199,7 +211,7 @@ def import_command(args: argparse.Namespace) -> int:
     run_started_at = datetime.now(tz=UTC)
 
     try:
-        bundle = load_export(args.input)
+        bundle = load_export(args.input, args.input_format)
     except ExportReadError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
@@ -507,10 +519,10 @@ def doctor_command(args: argparse.Namespace) -> int:
     issues: list[str] = []
 
     try:
-        bundle = load_export(args.input)
+        bundle = load_export(args.input, args.input_format)
         print(
             f"OK: Export source readable ({len(bundle.conversations)} conversations, "
-            f"kind={bundle.source_kind})"
+            f"kind={bundle.source_kind}, format={args.input_format})"
         )
     except ExportReadError as exc:
         issues.append(f"Export validation failed: {exc}")

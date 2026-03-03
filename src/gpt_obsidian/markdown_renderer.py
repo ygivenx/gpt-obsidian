@@ -26,7 +26,7 @@ def render_conversation_markdown(
     lines.append(f'title: "{_escape_yaml(conversation.title)}"')
     lines.append(f"created: {created_iso or ''}")
     lines.append(f"updated: {updated_iso or ''}")
-    lines.append("source: chatgpt")
+    lines.append(f"source: {conversation.source}")
     lines.append("note_type: conversation")
     lines.append("content_domain: research")
     lines.append(f"message_count: {insights.message_count}")
@@ -42,8 +42,12 @@ def render_conversation_markdown(
     else:
         lines.append("  - untagged")
     lines.append("tags:")
-    lines.append("  - chatgpt")
+    base_tags = _dedupe_preserving(conversation.tags or ["chatgpt"])
+    for tag in base_tags:
+        lines.append(f"  - {tag}")
     for tag in insights.topic_tags[:8]:
+        if tag in base_tags:
+            continue
         lines.append(f"  - {tag}")
     lines.append("---")
     lines.append("")
@@ -133,6 +137,19 @@ def render_conversation_markdown(
     lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _dedupe_preserving(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out or ["chatgpt"]
 
 
 def _append_bullets(lines: list[str], values: list[str], empty_text: str) -> None:
